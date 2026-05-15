@@ -1,0 +1,7 @@
+pyobjc-framework-Quartz>=10.3
+pyobjc-framework-ApplicationServices>=10.3
+pyobjc-framework-Cocoa>=10.3
+Pillow>=10.0.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+pytest>=8.0.0

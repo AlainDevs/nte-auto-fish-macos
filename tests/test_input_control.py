@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import pytest
+
+from nte_fisher.input_control import InputController
+
+
+class FakeQuartz:
+    kCGHIDEventTap = "hid"
+    kCGEventSourceStateHIDSystemState = 1
+    kCGEventSourceStatePrivate = -1
+    kCGEventSourceStateCombinedSessionState = 0
+    kCGEventLeftMouseDown = "mouse_down"
+    kCGEventLeftMouseUp = "mouse_up"
+    kCGMouseButtonLeft = "left"
+
+    def __init__(self):
+        self.posted = []
+        self.posted_hid = []
+
+    def CGEventSourceCreate(self, state):
+        return ("source", state)
+
+    def CGEventCreateKeyboardEvent(self, source, key_code, is_down):
+        return ("key", source, key_code, is_down)
+
+    def CGEventCreateMouseEvent(self, source, event_type, point, button):
+        return ("mouse", source, event_type, point, button)
+
+    def CGEventPostToPid(self, pid, event):
+        self.posted.append((pid, event))
+
+    def CGEventPost(self, tap, event):
+        self.posted_hid.append((tap, event))
+
+
+class FakeQuartzWithMouseMetadata(FakeQuartz):
+    kCGEventMouseMoved = "mouse_moved"
+    kCGMouseEventButtonNumber = "button_number"
+    kCGMouseEventClickState = "click_state"
+
+    def CGEventCreateMouseEvent(self, source, event_type, point, button):
+        return {
+            "kind": "mouse",
+            "source": source,
+            "event_type": event_type,
+            "point": point,
+            "button": button,
+            "fields": {},
+        }
+
+    def CGEventSetIntegerValueField(self, event, field, value):
+        event["fields"][field] = value
+
+
+def test_key_code_for_known_keys() -> None:
+    assert InputController.key_code_for("f") == 3
+    assert InputController.key_code_for("M") == 46
+    assert InputController.key_code_for("esc") == 53
+
+
+def test_key_code_for_unknown_key_raises() -> None:
+    with pytest.raises(KeyError):
+        InputController.key_code_for("not-a-key")
+
+
+def test_press_key_posts_down_and_up_events() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz)
+
+    action = controller.press_key(1234, "f", hold_seconds=0)
+
+    assert action.action_type == "key"
+    assert quartz.posted == [
+        (1234, ("key", ("source", 1), 3, True)),
+        (1234, ("key", ("source", 1), 3, False)),
+    ]
+
+
+def test_click_posts_mouse_down_and_up_events() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz)
+
+    action = controller.click(1234, 10.5, 20.25, hold_seconds=0)
+
+    assert action.action_type == "click"
+    assert quartz.posted == [
+        (1234, ("mouse", ("source", 1), "mouse_down", (10.5, 20.25), "left")),
+        (1234, ("mouse", ("source", 1), "mouse_up", (10.5, 20.25), "left")),
+    ]
+
+
+def test_click_can_override_mode_and_marks_mouse_click_metadata() -> None:
+    quartz = FakeQuartzWithMouseMetadata()
+    controller = InputController(quartz=quartz, mode="pid")
+
+    action = controller.click(1234, 10, 20, hold_seconds=0, mode="hid", activate_before_input=False)
+
+    assert action.action_type == "click"
+    assert quartz.posted == []
+    assert [event[1]["event_type"] for event in quartz.posted_hid] == [
+        "mouse_moved",
+        "mouse_down",
+        "mouse_up",
+    ]
+    assert quartz.posted_hid[1][1]["fields"] == {"button_number": 0, "click_state": 1}
+    assert quartz.posted_hid[2][1]["fields"] == {"button_number": 0, "click_state": 1}
+
+
+def test_dry_run_does_not_post_events() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz, dry_run=True)
+
+    controller.press_key(1234, "f")
+    controller.click(1234, 1, 2)
+
+    assert quartz.posted == []
+    assert [action.action_type for action in controller.sent_actions] == ["key", "click"]
+
+
+def test_hid_mode_posts_to_event_tap() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz, mode="hid")
+
+    controller.press_key(1234, "f", hold_seconds=0)
+
+    assert quartz.posted == []
+    assert quartz.posted_hid == [
+        ("hid", ("key", ("source", 1), 3, True)),
+        ("hid", ("key", ("source", 1), 3, False)),
+    ]
+
+
+def test_both_mode_posts_to_pid_and_event_tap() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz, mode="both")
+
+    controller.press_key(1234, "f", hold_seconds=0)
+
+    assert quartz.posted == [
+        (1234, ("key", ("source", 1), 3, True)),
+        (1234, ("key", ("source", 1), 3, False)),
+    ]
+    assert quartz.posted_hid == [
+        ("hid", ("key", ("source", 1), 3, True)),
+        ("hid", ("key", ("source", 1), 3, False)),
+    ]
+
+
+def test_none_event_source_uses_none_source() -> None:
+    quartz = FakeQuartz()
+    controller = InputController(quartz=quartz, event_source_state="none")
+
+    controller.press_key(1234, "f", hold_seconds=0)
+
+    assert quartz.posted == [
+        (1234, ("key", None, 3, True)),
+        (1234, ("key", None, 3, False)),
+    ]
