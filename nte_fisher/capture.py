@@ -58,7 +58,11 @@ class WindowCapture:
 
                 provider = self.quartz.CGImageGetDataProvider(image_ref)
                 pixel_data = self.quartz.CGDataProviderCopyData(provider)
-                data = bytes(pixel_data)
+                
+                # Use memoryview to avoid PyObjC bytes() bridge memory leak
+                m = memoryview(pixel_data)
+                data = m.tobytes()
+                del m
 
                 return Image.frombytes(
                     "RGBA",
