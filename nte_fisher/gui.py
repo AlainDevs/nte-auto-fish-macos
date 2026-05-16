@@ -29,7 +29,15 @@ class QueueLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self.log_queue.put(self.format(record))
+            message = self.format(record)
+            try:
+                self.log_queue.put_nowait(message)
+            except queue.Full:
+                try:
+                    self.log_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self.log_queue.put_nowait(message)
         except Exception:  # pragma: no cover - logging safety net
             self.handleError(record)
 
@@ -55,7 +63,9 @@ class NTEFisherApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.window_manager = WindowManager()
-        self.log_queue: queue.Queue[str] = queue.Queue()
+        self.max_log_lines = 1000
+        self._log_line_count = 0
+        self.log_queue: queue.Queue[str] = queue.Queue(maxsize=self.max_log_lines * 2)
         self.window_choices: list[WindowChoice] = []
         self.selected_window: WindowInfo | None = None
         self.bot_thread: threading.Thread | None = None
@@ -186,6 +196,10 @@ class NTEFisherApp(ctk.CTk):
     def _log_to_widget(self, message: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", message + "\n")
+        self._log_line_count += 1
+        while self._log_line_count > self.max_log_lines:
+            self.log_text.delete("1.0", "2.0")
+            self._log_line_count -= 1
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
@@ -201,6 +215,7 @@ class NTEFisherApp(ctk.CTk):
     def clear_logs(self) -> None:
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
+        self._log_line_count = 0
         self.log_text.configure(state="disabled")
 
     def _format_session_stats(self, stats: SessionStats) -> str:

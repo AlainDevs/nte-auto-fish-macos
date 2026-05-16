@@ -79,8 +79,14 @@ class TemplateMatcher:
     @staticmethod
     def _pil_to_gray(image: Image.Image) -> np.ndarray:
         rgb = image.convert("RGB")
-        array = np.array(rgb)
-        return cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+        try:
+            array = np.array(rgb)
+        finally:
+            rgb.close()
+        try:
+            return cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+        finally:
+            del array
 
     def _load_template(self, template_name: str) -> np.ndarray:
         if template_name in self._cache:
@@ -101,39 +107,47 @@ class TemplateMatcher:
         if template_name not in self.templates:
             raise KeyError(f"Unknown template: {template_name}")
 
-        gray = self._pil_to_gray(image)
-        template = self._load_template(template_name)
+        gray: np.ndarray | None = None
+        result: np.ndarray | None = None
+        try:
+            gray = self._pil_to_gray(image)
+            template = self._load_template(template_name)
 
-        template_h, template_w = template.shape[:2]
-        image_h, image_w = gray.shape[:2]
-        if template_w > image_w or template_h > image_h:
-            return None
+            template_h, template_w = template.shape[:2]
+            image_h, image_w = gray.shape[:2]
+            if template_w > image_w or template_h > image_h:
+                return None
 
-        method = self.methods.get(template_name, "ccoeff")
-        if method == "sqdiff":
-            result = cv2.matchTemplate(gray, template, cv2.TM_SQDIFF_NORMED)
-            min_value, _, min_location, _ = cv2.minMaxLoc(result)
-            confidence = 1.0 - float(min_value)
-            location = min_location
-        else:
-            result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
-            _, max_value, _, max_location = cv2.minMaxLoc(result)
-            confidence = float(max_value)
-            location = max_location
+            method = self.methods.get(template_name, "ccoeff")
+            if method == "sqdiff":
+                result = cv2.matchTemplate(gray, template, cv2.TM_SQDIFF_NORMED)
+                min_value, _, min_location, _ = cv2.minMaxLoc(result)
+                confidence = 1.0 - float(min_value)
+                location = min_location
+            else:
+                result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+                _, max_value, _, max_location = cv2.minMaxLoc(result)
+                confidence = float(max_value)
+                location = max_location
 
-        top_left = (int(location[0]), int(location[1]))
-        center = (top_left[0] + template_w // 2, top_left[1] + template_h // 2)
+            top_left = (int(location[0]), int(location[1]))
+            center = (top_left[0] + template_w // 2, top_left[1] + template_h // 2)
 
-        return MatchResult(
-            template_name=template_name,
-            template_path=self.templates[template_name],
-            confidence=confidence,
-            top_left=top_left,
-            center=center,
-            size=(template_w, template_h),
-            capture_size=(image_w, image_h),
-            method=method,
-        )
+            return MatchResult(
+                template_name=template_name,
+                template_path=self.templates[template_name],
+                confidence=confidence,
+                top_left=top_left,
+                center=center,
+                size=(template_w, template_h),
+                capture_size=(image_w, image_h),
+                method=method,
+            )
+        finally:
+            if result is not None:
+                del result
+            if gray is not None:
+                del gray
 
     def match(
         self,

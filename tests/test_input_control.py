@@ -17,15 +17,20 @@ class FakeQuartz:
     def __init__(self):
         self.posted = []
         self.posted_hid = []
+        self.alive_events = []
 
     def CGEventSourceCreate(self, state):
         return ("source", state)
 
     def CGEventCreateKeyboardEvent(self, source, key_code, is_down):
-        return ("key", source, key_code, is_down)
+        event = ("key", source, key_code, is_down)
+        self.alive_events.append(event)
+        return event
 
     def CGEventCreateMouseEvent(self, source, event_type, point, button):
-        return ("mouse", source, event_type, point, button)
+        event = ("mouse", source, event_type, point, button)
+        self.alive_events.append(event)
+        return event
 
     def CGEventPostToPid(self, pid, event):
         self.posted.append((pid, event))
@@ -40,7 +45,7 @@ class FakeQuartzWithMouseMetadata(FakeQuartz):
     kCGMouseEventClickState = "click_state"
 
     def CGEventCreateMouseEvent(self, source, event_type, point, button):
-        return {
+        event = {
             "kind": "mouse",
             "source": source,
             "event_type": event_type,
@@ -48,6 +53,8 @@ class FakeQuartzWithMouseMetadata(FakeQuartz):
             "button": button,
             "fields": {},
         }
+        self.alive_events.append(event)
+        return event
 
     def CGEventSetIntegerValueField(self, event, field, value):
         event["fields"][field] = value
@@ -192,3 +199,46 @@ def test_reset_accessibility_permission_runs_tccutil(monkeypatch) -> None:
 
     assert InputController.reset_accessibility_permission("com.example.app") is True
     assert calls == [(["tccutil", "reset", "Accessibility", "com.example.app"], False, True, True)]
+
+
+def test_press_key_wraps_quartz_events_in_autorelease_pool_and_releases_refs(monkeypatch) -> None:
+    quartz = FakeQuartz()
+    snapshots: list[list[object]] = []
+
+    class RecordingPool:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, traceback):
+            snapshots.append(list(quartz.alive_events))
+
+    monkeypatch.setattr("nte_fisher.input_control.autorelease_pool", lambda: RecordingPool(), raising=False)
+    controller = InputController(quartz=quartz)
+
+    controller.press_key(1234, "f", hold_seconds=0)
+
+    assert quartz.posted == [
+        (1234, ("key", ("source", 1), 3, True)),
+        (1234, ("key", ("source", 1), 3, False)),
+    ]
+    assert snapshots == [[]]
+
+
+def test_click_wraps_quartz_events_in_autorelease_pool_and_releases_refs(monkeypatch) -> None:
+    quartz = FakeQuartzWithMouseMetadata()
+    snapshots: list[list[object]] = []
+
+    class RecordingPool:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, traceback):
+            snapshots.append(list(quartz.alive_events))
+
+    monkeypatch.setattr("nte_fisher.input_control.autorelease_pool", lambda: RecordingPool(), raising=False)
+    controller = InputController(quartz=quartz)
+
+    controller.click(1234, 10, 20, hold_seconds=0)
+
+    assert [event[1]["event_type"] for event in quartz.posted] == ["mouse_moved", "mouse_down", "mouse_up"]
+    assert snapshots == [[]]

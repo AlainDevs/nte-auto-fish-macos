@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import gc
+import resource
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +23,19 @@ StartPhase = str
 
 
 LOGGER = logging.getLogger("nte_fisher")
+
+
+def close_capture_image(image: object | None) -> None:
+    """Close a Pillow-like capture image if the object supports explicit cleanup."""
+    if image is None:
+        return
+    close = getattr(image, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # pragma: no cover - cleanup safety net
+        LOGGER.debug("Failed to close capture image", exc_info=True)
 
 
 class StopRequested(RuntimeError):
@@ -66,6 +82,8 @@ class BotConfig:
     init_click_retries: int = 2
     init_click_retry_delay: float = 0.25
     click_foreground_fallback: bool = True
+    memory_log_every_cycles: int = 10
+    gc_collect_every_cycles: int = 10
 
 
 @dataclass(frozen=True)
@@ -185,48 +203,54 @@ class AutoFishingBot:
         while True:
             self.check_stop()
             image = self.capture.capture(window)
-            scored = self.matcher.score(image, template_name)
-            now = time.monotonic()
+            scored: MatchResult | None = None
+            confidence = -1.0
+            try:
+                scored = self.matcher.score(image, template_name)
+                now = time.monotonic()
 
-            if scored is None:
-                confidence = -1.0
-                center = None
-            else:
-                confidence = scored.confidence
-                center = scored.center
-                best_score = max(best_score, confidence)
+                if scored is None:
+                    confidence = -1.0
+                    center = None
+                else:
+                    confidence = scored.confidence
+                    center = scored.center
+                    best_score = max(best_score, confidence)
 
-            if scored is not None and confidence >= self.config.threshold:
-                elapsed = now - start
-                LOGGER.info(
-                    "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=%.3fs",
-                    scored.template_name,
-                    scored.confidence,
-                    scored.top_left,
-                    scored.center,
-                    scored.capture_size,
-                    elapsed,
-                )
-                return scored, image
+                if scored is not None and confidence >= self.config.threshold:
+                    elapsed = now - start
+                    LOGGER.info(
+                        "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=%.3fs",
+                        scored.template_name,
+                        scored.confidence,
+                        scored.top_left,
+                        scored.center,
+                        scored.capture_size,
+                        elapsed,
+                    )
+                    return scored, image
 
-            if now - last_log >= self.config.log_wait_every:
-                LOGGER.info(
-                    "Still waiting template=%s elapsed=%.1fs best_confidence=%.4f last_confidence=%.4f last_center=%s",
-                    template_name,
-                    now - start,
-                    best_score,
-                    confidence,
-                    center,
-                )
-                last_log = now
+                if now - last_log >= self.config.log_wait_every:
+                    LOGGER.info(
+                        "Still waiting template=%s elapsed=%.1fs best_confidence=%.4f last_confidence=%.4f last_center=%s",
+                        template_name,
+                        now - start,
+                        best_score,
+                        confidence,
+                        center,
+                    )
+                    last_log = now
 
-            if wait_timeout is not None and now - start >= wait_timeout:
-                raise TimeoutError(
-                    f"Timed out waiting for template={template_name!r} after "
-                    f"{wait_timeout:.1f}s; best_confidence={best_score:.4f}"
-                )
+                if wait_timeout is not None and now - start >= wait_timeout:
+                    raise TimeoutError(
+                        f"Timed out waiting for template={template_name!r} after "
+                        f"{wait_timeout:.1f}s; best_confidence={best_score:.4f}"
+                    )
 
-            self._sleep(scan_interval)
+                self._sleep(scan_interval)
+            finally:
+                if scored is None or confidence < self.config.threshold:
+                    close_capture_image(image)
 
     def wait_for_any_template(
         self,
@@ -249,55 +273,61 @@ class AutoFishingBot:
         while True:
             self.check_stop()
             image = self.capture.capture(window)
-            now = time.monotonic()
-            last_confidences: dict[str, float] = {}
-            last_centers: dict[str, tuple[int, int] | None] = {}
+            matched = False
+            try:
+                now = time.monotonic()
+                last_confidences: dict[str, float] = {}
+                last_centers: dict[str, tuple[int, int] | None] = {}
 
-            for template_name in template_names:
-                scored = self.matcher.score(image, template_name)
-                if scored is None:
-                    confidence = -1.0
-                    center = None
-                else:
-                    confidence = scored.confidence
-                    center = scored.center
-                    best_scores[template_name] = max(best_scores[template_name], confidence)
+                for template_name in template_names:
+                    scored = self.matcher.score(image, template_name)
+                    if scored is None:
+                        confidence = -1.0
+                        center = None
+                    else:
+                        confidence = scored.confidence
+                        center = scored.center
+                        best_scores[template_name] = max(best_scores[template_name], confidence)
 
-                last_confidences[template_name] = confidence
-                last_centers[template_name] = center
+                    last_confidences[template_name] = confidence
+                    last_centers[template_name] = center
 
-                if scored is not None and confidence >= self.config.threshold:
-                    elapsed = now - start
+                    if scored is not None and confidence >= self.config.threshold:
+                        matched = True
+                        elapsed = now - start
+                        LOGGER.info(
+                            "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=%.3fs",
+                            scored.template_name,
+                            scored.confidence,
+                            scored.top_left,
+                            scored.center,
+                            scored.capture_size,
+                            elapsed,
+                        )
+                        return scored, image
+
+                if now - last_log >= self.config.log_wait_every:
                     LOGGER.info(
-                        "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=%.3fs",
-                        scored.template_name,
-                        scored.confidence,
-                        scored.top_left,
-                        scored.center,
-                        scored.capture_size,
-                        elapsed,
+                        "Still waiting templates=%s elapsed=%.1fs best_confidences=%s last_confidences=%s last_centers=%s",
+                        template_list,
+                        now - start,
+                        {name: round(score, 4) for name, score in best_scores.items()},
+                        {name: round(score, 4) for name, score in last_confidences.items()},
+                        last_centers,
                     )
-                    return scored, image
+                    last_log = now
 
-            if now - last_log >= self.config.log_wait_every:
-                LOGGER.info(
-                    "Still waiting templates=%s elapsed=%.1fs best_confidences=%s last_confidences=%s last_centers=%s",
-                    template_list,
-                    now - start,
-                    {name: round(score, 4) for name, score in best_scores.items()},
-                    {name: round(score, 4) for name, score in last_confidences.items()},
-                    last_centers,
-                )
-                last_log = now
+                if wait_timeout is not None and now - start >= wait_timeout:
+                    best_summary = ", ".join(f"{name}={score:.4f}" for name, score in best_scores.items())
+                    raise TimeoutError(
+                        f"Timed out waiting for any template={template_names!r} after "
+                        f"{wait_timeout:.1f}s; best_confidences={best_summary}"
+                    )
 
-            if wait_timeout is not None and now - start >= wait_timeout:
-                best_summary = ", ".join(f"{name}={score:.4f}" for name, score in best_scores.items())
-                raise TimeoutError(
-                    f"Timed out waiting for any template={template_names!r} after "
-                    f"{wait_timeout:.1f}s; best_confidences={best_summary}"
-                )
-
-            self._sleep(scan_interval)
+                self._sleep(scan_interval)
+            finally:
+                if not matched:
+                    close_capture_image(image)
 
     def wait_for_template_absent(
         self,
@@ -322,33 +352,36 @@ class AutoFishingBot:
         while True:
             self.check_stop()
             image = self.capture.capture(window)
-            scored = self.matcher.score(image, template_name)
-            now = time.monotonic()
-            confidence = -1.0 if scored is None else scored.confidence
-            best_present_score = max(best_present_score, confidence)
+            try:
+                scored = self.matcher.score(image, template_name)
+                now = time.monotonic()
+                confidence = -1.0 if scored is None else scored.confidence
+                best_present_score = max(best_present_score, confidence)
 
-            if confidence < self.config.threshold:
-                if absent_since is None:
-                    absent_since = now
-                if now - absent_since >= stable_duration:
-                    LOGGER.info(
-                        "Confirmed template=%s absent for %.3fs last_confidence=%.4f elapsed=%.3fs",
-                        template_name,
-                        now - absent_since,
-                        confidence,
-                        now - start,
+                if confidence < self.config.threshold:
+                    if absent_since is None:
+                        absent_since = now
+                    if now - absent_since >= stable_duration:
+                        LOGGER.info(
+                            "Confirmed template=%s absent for %.3fs last_confidence=%.4f elapsed=%.3fs",
+                            template_name,
+                            now - absent_since,
+                            confidence,
+                            now - start,
+                        )
+                        return
+                else:
+                    absent_since = None
+
+                if now - start >= timeout:
+                    raise TimeoutError(
+                        f"Timed out confirming template={template_name!r} absent after {timeout:.1f}s; "
+                        f"last_confidence={confidence:.4f} best_confidence={best_present_score:.4f}"
                     )
-                    return
-            else:
-                absent_since = None
 
-            if now - start >= timeout:
-                raise TimeoutError(
-                    f"Timed out confirming template={template_name!r} absent after {timeout:.1f}s; "
-                    f"last_confidence={confidence:.4f} best_confidence={best_present_score:.4f}"
-                )
-
-            self._sleep(scan_interval)
+                self._sleep(scan_interval)
+            finally:
+                close_capture_image(image)
 
     def confirm_absent_after_action(self, template_name: str) -> None:
         if self.config.dry_run:
@@ -372,25 +405,28 @@ class AutoFishingBot:
         timeout = max(0.0, self.config.catch_to_map_delay)
         if timeout <= 0:
             image = self.capture.capture(self._current_window())
-            scored = self.matcher.score(image, "time_to_open_map")
-            if scored is not None and scored.confidence >= self.config.threshold:
+            try:
+                scored = self.matcher.score(image, "time_to_open_map")
+                if scored is not None and scored.confidence >= self.config.threshold:
+                    LOGGER.info(
+                        "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=0.000s",
+                        scored.template_name,
+                        scored.confidence,
+                        scored.top_left,
+                        scored.center,
+                        scored.capture_size,
+                    )
+                    return scored
                 LOGGER.info(
-                    "Detected template=%s confidence=%.4f top_left=%s center=%s capture=%s elapsed=0.000s",
-                    scored.template_name,
-                    scored.confidence,
-                    scored.top_left,
-                    scored.center,
-                    scored.capture_size,
+                    "time_to_open_map not detected before map key and catch_to_map_delay is %.0fms; opening map immediately",
+                    self.config.catch_to_map_delay * 1000,
                 )
-                return scored
-            LOGGER.info(
-                "time_to_open_map not detected before map key and catch_to_map_delay is %.0fms; opening map immediately",
-                self.config.catch_to_map_delay * 1000,
-            )
-            raise TimeoutError("time_to_open_map not detected and catch_to_map_delay is disabled")
+                raise TimeoutError("time_to_open_map not detected and catch_to_map_delay is disabled")
+            finally:
+                close_capture_image(image)
 
         try:
-            match, _ = self.wait_for_template(
+            match, image = self.wait_for_template(
                 "time_to_open_map",
                 self.config.time_to_open_map_scan_interval,
                 timeout=timeout,
@@ -403,6 +439,8 @@ class AutoFishingBot:
                 timeout * 1000,
             )
             raise
+        finally:
+            close_capture_image(locals().get("image"))
 
     def press(self, key: str) -> None:
         window = self._current_window()
@@ -556,12 +594,15 @@ class AutoFishingBot:
         if self._should_run_phase(start_at, "start"):
             self.check_stop()
             LOGGER.info("State 1: wait for start_fishing, then press F")
-            self.wait_for_template("start_fishing", self.config.scan_interval)
-            self.press("f")
-            if self.config.post_start_delay > 0:
-                LOGGER.info("Post-start settle delay %.0fms before catch scan", self.config.post_start_delay * 1000)
-                self._sleep(self.config.post_start_delay)
-            self.confirm_absent_after_action("start_fishing")
+            _, start_image = self.wait_for_template("start_fishing", self.config.scan_interval)
+            try:
+                self.press("f")
+                if self.config.post_start_delay > 0:
+                    LOGGER.info("Post-start settle delay %.0fms before catch scan", self.config.post_start_delay * 1000)
+                    self._sleep(self.config.post_start_delay)
+                self.confirm_absent_after_action("start_fishing")
+            finally:
+                close_capture_image(start_image)
 
         if self._should_run_phase(start_at, "catch"):
             self.check_stop()
@@ -569,28 +610,36 @@ class AutoFishingBot:
                 "State 2: wait for catch_now, immediately press F, wait for time_to_open_map up to %.0fms, press map key once",
                 self.config.catch_to_map_delay * 1000,
             )
-            self.wait_for_template("catch_now", self.config.catch_scan_interval)
-            self.press("f")
+            _, catch_image = self.wait_for_template("catch_now", self.config.catch_scan_interval)
             try:
-                self.wait_until_time_to_open_map()
-            except TimeoutError:
-                pass
-            LOGGER.info("Pressing map key once key=%s", self.config.map_key)
-            self.press(self.config.map_key)
+                self.press("f")
+                try:
+                    self.wait_until_time_to_open_map()
+                except TimeoutError:
+                    pass
+                LOGGER.info("Pressing map key once key=%s", self.config.map_key)
+                self.press(self.config.map_key)
+            finally:
+                close_capture_image(catch_image)
 
         if self._should_run_phase(start_at, "return"):
             self.check_stop()
             LOGGER.info(
-                "State 3: wait for return or failed_catch, press ESC, delay %.0fms, press ESC",
-                self.config.esc_delay * 1000,
+                "State 3: wait for return or failed_catch, press ESC once",
             )
-            return_match, _ = self.wait_for_any_template(("return", "failed_catch"), self.config.scan_interval)
-            outcome_template = return_match.template_name
-            LOGGER.info("State 3 exit trigger template=%s; backing out with ESC sequence", return_match.template_name)
-            self.press("esc")
-            self._sleep(self.config.esc_delay)
-            self.press("esc")
-            self.confirm_absent_after_action(return_match.template_name)
+            return_match, return_image = self.wait_for_any_template(("return", "failed_catch"), self.config.scan_interval)
+            try:
+                outcome_template = return_match.template_name
+                LOGGER.info("State 3 exit trigger template=%s; backing out with single ESC", return_match.template_name)
+                self.press("esc")
+                #sleep for 1sec then click esc again go back to world from map
+                self._sleep(1.0)
+                LOGGER.info("State 3: 1sec sleep completed, pressing ESC again to go back to world from map")
+                self.press("esc")
+                
+                self.confirm_absent_after_action(return_match.template_name)
+            finally:
+                close_capture_image(return_image)
 
         if self._should_run_phase(start_at, "recast"):
             self.check_stop()
@@ -601,8 +650,11 @@ class AutoFishingBot:
         if self._should_run_phase(start_at, "init"):
             self.check_stop()
             LOGGER.info("State 5: wait for init_start, click center once, then return to State 1")
-            init_match, _ = self.wait_for_template("init_start", self.config.scan_interval)
-            self.click_init_start_once(init_match)
+            init_match, init_image = self.wait_for_template("init_start", self.config.scan_interval)
+            try:
+                self.click_init_start_once(init_match)
+            finally:
+                close_capture_image(init_image)
 
         self._record_cycle_outcome(cycle_number, outcome_template)
         LOGGER.info("===== Cycle %d completed =====", cycle_number)
@@ -614,7 +666,32 @@ class AutoFishingBot:
             self.check_stop()
             start_at = self.config.start_at if cycle == 1 else "start"
             self.run_cycle(cycle, start_at=start_at)
+            self._collect_garbage(cycle)
+            self._log_memory_diagnostic(cycle)
             cycle += 1
+
+    def _collect_garbage(self, cycle_number: int) -> None:
+        every = self.config.gc_collect_every_cycles
+        if every <= 0 or cycle_number % every != 0:
+            return
+        collected = gc.collect()
+        LOGGER.info("Garbage collection after cycle=%d collected=%d", cycle_number, collected)
+
+    def _log_memory_diagnostic(self, cycle_number: int) -> None:
+        every = self.config.memory_log_every_cycles
+        if every <= 0 or cycle_number % every != 0:
+            return
+        LOGGER.info("Memory diagnostic after cycle=%d %s", cycle_number, process_memory_summary())
+
+
+def process_memory_summary() -> str:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    max_rss = float(usage.ru_maxrss)
+    if sys.platform == "darwin":
+        max_rss_mb = max_rss / (1024 * 1024)
+    else:
+        max_rss_mb = max_rss / 1024
+    return f"max_rss={max_rss_mb:.1f}MB"
 
 
 def configure_logging(verbose: bool = False, log_file: str | None = None) -> None:

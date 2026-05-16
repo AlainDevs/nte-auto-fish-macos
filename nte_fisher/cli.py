@@ -191,6 +191,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         action_confirm_timeout=args.action_confirm_timeout,
         absence_confirm_duration=args.absence_confirm_duration,
         init_click_confirm_timeout=args.init_click_confirm_timeout,
+        memory_log_every_cycles=args.memory_log_every_cycles,
+        gc_collect_every_cycles=args.gc_collect_every_cycles,
     )
     LOGGER.info("Starting bot with config=%s", config)
     AutoFishingBot(config).run()
@@ -263,6 +265,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--action-confirm-timeout", type=float, default=2.0, help="Timeout for post-input visual confirmations")
     run_parser.add_argument("--absence-confirm-duration", type=float, default=0.20, help="Stable absent duration needed to confirm UI changed")
     run_parser.add_argument("--init-click-confirm-timeout", type=float, default=2.0, help="Seconds to wait for start_fishing after init_start click before retry/failure")
+    run_parser.add_argument("--memory-log-every-cycles", type=int, default=10, help="Log process max RSS every N completed cycles; set 0 to disable")
+    run_parser.add_argument("--gc-collect-every-cycles", type=int, default=10, help="Run Python garbage collection every N completed cycles; set 0 to disable")
     run_parser.set_defaults(func=cmd_run)
 
     return parser

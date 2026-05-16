@@ -34,6 +34,25 @@ class FakeCapture:
         return Image.new("RGB", (1600, 800), "black")
 
 
+class TrackingImage:
+    def __init__(self, index: int) -> None:
+        self.index = index
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TrackingCapture:
+    def __init__(self) -> None:
+        self.images: list[TrackingImage] = []
+
+    def capture(self, window: WindowInfo) -> TrackingImage:
+        image = TrackingImage(len(self.images))
+        self.images.append(image)
+        return image
+
+
 class FakeInput:
     def __init__(self) -> None:
         self.clicks: list[dict[str, object]] = []
@@ -122,6 +141,23 @@ class SequenceMatcher:
         )
 
 
+class TrackingMatcher:
+    def __init__(self, confidence_by_capture: list[float]) -> None:
+        self.confidence_by_capture = confidence_by_capture
+
+    def score(self, image: TrackingImage, template_name: str):
+        confidence = self.confidence_by_capture[min(image.index, len(self.confidence_by_capture) - 1)]
+        return MatchResult(
+            template_name=template_name,
+            template_path=f"images/{template_name}.png",
+            confidence=confidence,
+            top_left=(10, 20),
+            center=(30, 40),
+            size=(10, 10),
+            capture_size=(1600, 800),
+        )
+
+
 class AlwaysMatcher:
     def __init__(self, confidence_by_template: dict[str, float]) -> None:
         self.confidence_by_template = confidence_by_template
@@ -174,6 +210,108 @@ def test_init_click_uses_single_foreground_hid_click_without_confirmation_retry(
     assert fake_input.clicks[0]["y"] == 300
 
 
+def test_wait_for_template_closes_unmatched_capture_images() -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    capture = TrackingCapture()
+    bot = AutoFishingBot(
+        BotConfig(threshold=0.70, scan_interval=0),
+        window_manager=FakeWindowManager(window),
+        capture=capture,
+        matcher=TrackingMatcher([0.10, 0.95]),
+        input_controller=FakeInput(),
+        sleep=lambda seconds: None,
+    )
+
+    _, matched_image = bot.wait_for_template("start_fishing", scan_interval=0)
+
+    assert capture.images[0].closed is True
+    assert matched_image is capture.images[1]
+    assert capture.images[1].closed is False
+
+
+def test_run_cycle_closes_matched_capture_images_it_only_needs_for_match_data() -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    capture = TrackingCapture()
+    bot = AutoFishingBot(
+        BotConfig(threshold=0.70, scan_interval=0, click_hold_seconds=0),
+        window_manager=FakeWindowManager(window),
+        capture=capture,
+        matcher=TrackingMatcher([0.95]),
+        input_controller=FakeInput(),
+        sleep=lambda seconds: None,
+    )
+
+    bot.run_cycle(1, start_at="init")
+
+    assert [image.closed for image in capture.images] == [True]
+
+
+def test_run_logs_memory_diagnostic_at_configured_cycle_interval(caplog, monkeypatch) -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    bot = AutoFishingBot(
+        BotConfig(max_cycles=2, memory_log_every_cycles=1, gc_collect_every_cycles=0),
+        window_manager=FakeWindowManager(window),
+        capture=FakeCapture(),
+        matcher=AlwaysMatcher({}),
+        input_controller=FakeInput(),
+        sleep=lambda seconds: None,
+    )
+    bot.run_cycle = lambda cycle_number, start_at="start": None
+
+    monkeypatch.setattr("nte_fisher.bot.process_memory_summary", lambda: "max_rss=123.4MB")
+
+    with caplog.at_level("INFO", logger="nte_fisher"):
+        bot.run()
+
+    assert "Memory diagnostic after cycle=1 max_rss=123.4MB" in caplog.text
+    assert "Memory diagnostic after cycle=2 max_rss=123.4MB" in caplog.text
+
+
+def test_run_collects_garbage_at_configured_cycle_interval(caplog, monkeypatch) -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    calls: list[int] = []
+    bot = AutoFishingBot(
+        BotConfig(max_cycles=3, memory_log_every_cycles=0, gc_collect_every_cycles=2),
+        window_manager=FakeWindowManager(window),
+        capture=FakeCapture(),
+        matcher=AlwaysMatcher({}),
+        input_controller=FakeInput(),
+        sleep=lambda seconds: None,
+    )
+    bot.run_cycle = lambda cycle_number, start_at="start": calls.append(cycle_number)
+    monkeypatch.setattr("nte_fisher.bot.gc.collect", lambda: 7)
+
+    with caplog.at_level("INFO", logger="nte_fisher"):
+        bot.run()
+
+    assert calls == [1, 2, 3]
+    assert "Garbage collection after cycle=2 collected=7" in caplog.text
+
+
 def test_click_uses_refreshed_window_bounds_for_coordinate_mapping() -> None:
     initial_window = WindowInfo(
         owner_name="NTE",
@@ -218,7 +356,7 @@ def test_click_uses_refreshed_window_bounds_for_coordinate_mapping() -> None:
     assert fake_input.activated_pids == [1234]
 
 
-def test_return_phase_backs_out_when_failed_catch_detected(caplog) -> None:
+def test_return_phase_backs_out_with_single_esc_when_failed_catch_detected(caplog) -> None:
     window = WindowInfo(
         owner_name="NTE",
         window_name="Main",
@@ -254,7 +392,7 @@ def test_return_phase_backs_out_when_failed_catch_detected(caplog) -> None:
     with caplog.at_level("INFO", logger="nte_fisher"):
         bot.run_cycle(1, start_at="return")
 
-    assert fake_input.keys == ["esc", "esc", "f"]
+    assert fake_input.keys == ["esc", "f"]
     assert "State 3 exit trigger template=failed_catch" in caplog.text
     assert bot.stats.loops_completed == 1
     assert bot.stats.successful_loops == 0

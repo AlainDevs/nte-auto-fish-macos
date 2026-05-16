@@ -42,6 +42,24 @@ class FakeWidget:
         pass
 
 
+class RecordingLogWidget(FakeWidget):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.inserted: list[str] = []
+        self.deleted: list[tuple[str, str]] = []
+        self.states: list[str] = []
+
+    def configure(self, *args, **kwargs) -> None:
+        if "state" in kwargs:
+            self.states.append(kwargs["state"])
+
+    def insert(self, index, text) -> None:
+        self.inserted.append(text)
+
+    def delete(self, start, end) -> None:
+        self.deleted.append((start, end))
+
+
 class FakeRoot(FakeWidget):
     def title(self, *args, **kwargs) -> None:
         pass
@@ -155,3 +173,28 @@ def test_gui_applies_session_stats_text() -> None:
     app._apply_session_stats(SessionStats(loops_completed=5, successful_loops=3, failed_fish_gone_loops=2))
 
     assert app.session_stats_var.get() == "Session: loops=5 success=3 failed/fish gone=2"
+
+
+def test_gui_log_widget_prunes_old_lines_when_limit_exceeded() -> None:
+    app = NTEFisherApp.__new__(NTEFisherApp)
+    app.log_text = RecordingLogWidget()
+    app.max_log_lines = 3
+    app._log_line_count = 0
+
+    for index in range(5):
+        app._log_to_widget(f"line {index}")
+
+    assert app._log_line_count == 3
+    assert app.log_text.inserted == ["line 0\n", "line 1\n", "line 2\n", "line 3\n", "line 4\n"]
+    assert app.log_text.deleted == [("1.0", "2.0"), ("1.0", "2.0")]
+
+
+def test_clear_logs_resets_log_line_count() -> None:
+    app = NTEFisherApp.__new__(NTEFisherApp)
+    app.log_text = RecordingLogWidget()
+    app._log_line_count = 42
+
+    app.clear_logs()
+
+    assert app._log_line_count == 0
+    assert app.log_text.deleted == [("1.0", "end")]

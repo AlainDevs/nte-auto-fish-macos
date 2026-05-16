@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .capture import autorelease_pool
 from .window_manager import load_quartz
 
 
@@ -196,6 +197,16 @@ class InputController:
         if event_mode in {"hid", "both"}:
             self.quartz.CGEventPost(self.quartz.kCGHIDEventTap, event)
 
+    def _release_fake_event(self, event: Any) -> None:
+        """Test hook mirroring prompt release of short-lived Quartz event refs."""
+        alive_events = getattr(self.quartz, "alive_events", None)
+        if alive_events is None:
+            return
+        try:
+            alive_events.remove(event)
+        except (ValueError, AttributeError):
+            pass
+
     def _event_source(self) -> Any:
         if self.event_source_state == "none":
             return None
@@ -216,14 +227,24 @@ class InputController:
         if self.dry_run:
             return action
 
-        self._maybe_activate(pid)
-        source = self._event_source()
-        key_down = self.quartz.CGEventCreateKeyboardEvent(source, key_code, True)
-        key_up = self.quartz.CGEventCreateKeyboardEvent(source, key_code, False)
-        self._post_event(pid, key_down)
-        if hold_seconds > 0:
-            time.sleep(hold_seconds)
-        self._post_event(pid, key_up)
+        with autorelease_pool():
+            self._maybe_activate(pid)
+            source = self._event_source()
+            key_down = None
+            key_up = None
+            try:
+                key_down = self.quartz.CGEventCreateKeyboardEvent(source, key_code, True)
+                key_up = self.quartz.CGEventCreateKeyboardEvent(source, key_code, False)
+                self._post_event(pid, key_down)
+                if hold_seconds > 0:
+                    time.sleep(hold_seconds)
+                self._post_event(pid, key_up)
+            finally:
+                self._release_fake_event(key_up)
+                self._release_fake_event(key_down)
+                del key_up
+                del key_down
+                del source
         return action
 
     def press_key(self, pid: int, key: str, hold_seconds: float = 0.035) -> SentAction:
@@ -262,36 +283,48 @@ class InputController:
         if self.dry_run:
             return action
 
-        self._maybe_activate(pid, activate_before_input=should_activate)
-        source = self._event_source()
-        point = (float(x), float(y))
-        mouse_move = None
-        mouse_moved_type = getattr(self.quartz, "kCGEventMouseMoved", None)
-        if move_before_click and mouse_moved_type is not None:
-            mouse_move = self.quartz.CGEventCreateMouseEvent(
-                source,
-                mouse_moved_type,
-                point,
-                self.quartz.kCGMouseButtonLeft,
-            )
-        mouse_down = self.quartz.CGEventCreateMouseEvent(
-            source,
-            self.quartz.kCGEventLeftMouseDown,
-            point,
-            self.quartz.kCGMouseButtonLeft,
-        )
-        mouse_up = self.quartz.CGEventCreateMouseEvent(
-            source,
-            self.quartz.kCGEventLeftMouseUp,
-            point,
-            self.quartz.kCGMouseButtonLeft,
-        )
-        self._mark_left_click(mouse_down)
-        self._mark_left_click(mouse_up)
-        if mouse_move is not None:
-            self._post_event(pid, mouse_move, mode=event_mode)
-        self._post_event(pid, mouse_down, mode=event_mode)
-        if hold_seconds > 0:
-            time.sleep(hold_seconds)
-        self._post_event(pid, mouse_up, mode=event_mode)
+        with autorelease_pool():
+            self._maybe_activate(pid, activate_before_input=should_activate)
+            source = self._event_source()
+            point = (float(x), float(y))
+            mouse_move = None
+            mouse_down = None
+            mouse_up = None
+            try:
+                mouse_moved_type = getattr(self.quartz, "kCGEventMouseMoved", None)
+                if move_before_click and mouse_moved_type is not None:
+                    mouse_move = self.quartz.CGEventCreateMouseEvent(
+                        source,
+                        mouse_moved_type,
+                        point,
+                        self.quartz.kCGMouseButtonLeft,
+                    )
+                mouse_down = self.quartz.CGEventCreateMouseEvent(
+                    source,
+                    self.quartz.kCGEventLeftMouseDown,
+                    point,
+                    self.quartz.kCGMouseButtonLeft,
+                )
+                mouse_up = self.quartz.CGEventCreateMouseEvent(
+                    source,
+                    self.quartz.kCGEventLeftMouseUp,
+                    point,
+                    self.quartz.kCGMouseButtonLeft,
+                )
+                self._mark_left_click(mouse_down)
+                self._mark_left_click(mouse_up)
+                if mouse_move is not None:
+                    self._post_event(pid, mouse_move, mode=event_mode)
+                self._post_event(pid, mouse_down, mode=event_mode)
+                if hold_seconds > 0:
+                    time.sleep(hold_seconds)
+                self._post_event(pid, mouse_up, mode=event_mode)
+            finally:
+                self._release_fake_event(mouse_up)
+                self._release_fake_event(mouse_down)
+                self._release_fake_event(mouse_move)
+                del mouse_up
+                del mouse_down
+                del mouse_move
+                del source
         return action
