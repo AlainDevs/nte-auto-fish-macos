@@ -157,3 +157,38 @@ def test_none_event_source_uses_none_source() -> None:
         (1234, ("key", None, 3, True)),
         (1234, ("key", None, 3, False)),
     ]
+
+
+def test_accessibility_prompt_uses_trusted_check_with_options(monkeypatch) -> None:
+    calls = []
+
+    class FakeApplicationServices:
+        kAXTrustedCheckOptionPrompt = "prompt"
+
+        @staticmethod
+        def AXIsProcessTrustedWithOptions(options):
+            calls.append(options)
+            return True
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "ApplicationServices", FakeApplicationServices)
+
+    assert InputController.is_accessibility_trusted(prompt=True) is True
+    assert calls == [{"prompt": True}]
+
+
+def test_reset_accessibility_permission_runs_tccutil(monkeypatch) -> None:
+    import sys
+    import types
+
+    calls = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        calls.append((command, check, capture_output, text))
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setitem(sys.modules, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    assert InputController.reset_accessibility_permission("com.example.app") is True
+    assert calls == [(["tccutil", "reset", "Accessibility", "com.example.app"], False, True, True)]

@@ -101,16 +101,71 @@ class InputController:
         return KEY_CODES[normalized]
 
     @staticmethod
-    def is_accessibility_trusted() -> bool:
-        """Return whether the current Python process is trusted for Accessibility."""
+    def is_accessibility_trusted(prompt: bool = False) -> bool:
+        """Return whether the current Python process is trusted for Accessibility.
+
+        When prompt is True, macOS shows the Accessibility permission prompt or
+        opens the relevant Privacy & Security settings pane.
+        """
         try:
             import ApplicationServices  # type: ignore
         except ImportError:  # pragma: no cover - host/platform dependent
             return False
+        if prompt:
+            checker_with_options = getattr(ApplicationServices, "AXIsProcessTrustedWithOptions", None)
+            prompt_key = getattr(ApplicationServices, "kAXTrustedCheckOptionPrompt", "AXTrustedCheckOptionPrompt")
+            if checker_with_options is not None:
+                return bool(checker_with_options({prompt_key: True}))
         checker = getattr(ApplicationServices, "AXIsProcessTrusted", None)
         if checker is None:
             return False
         return bool(checker())
+
+    @staticmethod
+    def open_accessibility_settings() -> bool:
+        """Open macOS Accessibility privacy settings for the user."""
+        try:
+            import subprocess
+        except ImportError:  # pragma: no cover
+            return False
+        url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        try:
+            subprocess.run(["open", url], check=False)
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def open_screen_recording_settings() -> bool:
+        """Open macOS Screen Recording privacy settings for the user."""
+        try:
+            import subprocess
+        except ImportError:  # pragma: no cover
+            return False
+        url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        try:
+            subprocess.run(["open", url], check=False)
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def reset_accessibility_permission(bundle_id: str = "com.nte.autofisher") -> bool:
+        """Reset stale macOS Accessibility permission for this app bundle ID."""
+        try:
+            import subprocess
+        except ImportError:  # pragma: no cover
+            return False
+        try:
+            completed = subprocess.run(
+                ["tccutil", "reset", "Accessibility", bundle_id],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        return completed.returncode == 0
 
     @staticmethod
     def activate_application(pid: int) -> bool:

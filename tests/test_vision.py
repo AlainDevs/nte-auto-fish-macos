@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from PIL import Image, ImageDraw
 
@@ -64,3 +65,16 @@ def test_template_matcher_supports_sqdiff_method(tmp_path: Path) -> None:
     assert result is not None
     assert result.method == "sqdiff"
     assert result.center == (28, 24)
+
+
+def test_template_paths_resolve_inside_pyinstaller_bundle(tmp_path: Path, monkeypatch) -> None:
+    bundled_images = tmp_path / "images"
+    bundled_images.mkdir()
+    template_path = bundled_images / "start_fishing.png"
+    template_path.write_bytes(b"placeholder")
+
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    matcher = TemplateMatcher({"start_fishing": "images/start_fishing.png"})
+
+    assert matcher.templates["start_fishing"] == template_path

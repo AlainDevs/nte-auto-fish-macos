@@ -22,6 +22,10 @@ StartPhase = str
 LOGGER = logging.getLogger("nte_fisher")
 
 
+class StopRequested(RuntimeError):
+    """Raised when a cooperative stop is requested by the GUI/controller."""
+
+
 @dataclass(frozen=True)
 class BotConfig:
     """Timing and matching configuration for the fishing bot."""
@@ -34,7 +38,7 @@ class BotConfig:
     scan_interval: float = 0.08
     catch_scan_interval: float = 0.03
     post_start_delay: float = 0.300
-    catch_to_map_delay: float = 0.666
+    catch_to_map_delay: float = 0.555
     time_to_open_map_scan_interval: float = 0.03
     map_key: str = "m"
     map_key_retries: int = 3
@@ -44,10 +48,10 @@ class BotConfig:
     key_hold_seconds: float = 0.100
     click_hold_seconds: float = 0.035
     input_mode: InputMode = "pid"
-    click_input_mode: InputMode | None = None
+    click_input_mode: InputMode = "hid"
     event_source_state: EventSourceState = "hid"
     activate_before_input: bool = False
-    activate_before_click: bool | None = None
+    activate_before_click: bool = True
     activation_delay: float = 0.15
     start_at: StartPhase = "start"
     max_cycles: int | None = None
@@ -75,6 +79,7 @@ class AutoFishingBot:
         matcher: TemplateMatcher | None = None,
         input_controller: InputController | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.window_manager = window_manager if window_manager is not None else WindowManager()
@@ -96,7 +101,25 @@ class AutoFishingBot:
             activation_delay=config.activation_delay,
         )
         self.sleep = sleep
+        self.should_stop = should_stop if should_stop is not None else lambda: False
         self.window: WindowInfo | None = None
+
+    def check_stop(self) -> None:
+        """Raise StopRequested when an external controller asks the bot to stop."""
+        if self.should_stop():
+            raise StopRequested("Bot stopped by user")
+
+    def _sleep(self, seconds: float) -> None:
+        if seconds <= 0:
+            self.check_stop()
+            return
+        remaining = seconds
+        while remaining > 0:
+            self.check_stop()
+            step = min(remaining, 0.10)
+            self.sleep(step)
+            remaining -= step
+        self.check_stop()
 
     def resolve_window(self) -> WindowInfo:
         self.window = self.window_manager.find_window(
@@ -148,6 +171,7 @@ class AutoFishingBot:
 
         LOGGER.info("Waiting for template=%s threshold=%.2f", template_name, self.config.threshold)
         while True:
+            self.check_stop()
             image = self.capture.capture(window)
             scored = self.matcher.score(image, template_name)
             now = time.monotonic()
@@ -190,7 +214,7 @@ class AutoFishingBot:
                     f"{wait_timeout:.1f}s; best_confidence={best_score:.4f}"
                 )
 
-            self.sleep(scan_interval)
+            self._sleep(scan_interval)
 
     def wait_for_any_template(
         self,
@@ -211,6 +235,7 @@ class AutoFishingBot:
 
         LOGGER.info("Waiting for any template=%s threshold=%.2f", template_list, self.config.threshold)
         while True:
+            self.check_stop()
             image = self.capture.capture(window)
             now = time.monotonic()
             last_confidences: dict[str, float] = {}
@@ -260,7 +285,7 @@ class AutoFishingBot:
                     f"{wait_timeout:.1f}s; best_confidences={best_summary}"
                 )
 
-            self.sleep(scan_interval)
+            self._sleep(scan_interval)
 
     def wait_for_template_absent(
         self,
@@ -283,6 +308,7 @@ class AutoFishingBot:
             self.config.threshold,
         )
         while True:
+            self.check_stop()
             image = self.capture.capture(window)
             scored = self.matcher.score(image, template_name)
             now = time.monotonic()
@@ -310,7 +336,7 @@ class AutoFishingBot:
                     f"last_confidence={confidence:.4f} best_confidence={best_present_score:.4f}"
                 )
 
-            self.sleep(scan_interval)
+            self._sleep(scan_interval)
 
     def confirm_absent_after_action(self, template_name: str) -> None:
         if self.config.dry_run:
@@ -379,15 +405,16 @@ class AutoFishingBot:
 
     def press_repeated(self, key: str, count: int, delay: float) -> None:
         for index in range(count):
+            self.check_stop()
             LOGGER.info("Repeated input key=%s attempt=%d/%d", key, index + 1, count)
             self.press(key)
             if index < count - 1 and delay > 0:
-                self.sleep(delay)
+                self._sleep(delay)
 
     def _configured_click_mode(self) -> InputMode:
-        return self.config.click_input_mode or self.config.input_mode
+        return self.config.click_input_mode
 
-    def _configured_click_activation(self) -> bool | None:
+    def _configured_click_activation(self) -> bool:
         return self.config.activate_before_click
 
     def _pre_activate_for_click(self, window: WindowInfo, click_activation: bool | None) -> None:
@@ -403,7 +430,7 @@ class AutoFishingBot:
             activated,
         )
         if self.config.activation_delay > 0:
-            self.sleep(self.config.activation_delay)
+            self._sleep(self.config.activation_delay)
 
     def click_match_center(
         self,
@@ -440,7 +467,7 @@ class AutoFishingBot:
             global_y,
             hold_seconds=self.config.click_hold_seconds,
             mode=click_mode,
-            activate_before_input=click_activation,
+            activate_before_input=False if click_activation else click_activation,
         )
         LOGGER.info(
             "Input action=%s pid=%s detail=%s dry_run=%s",
@@ -450,65 +477,15 @@ class AutoFishingBot:
             self.config.dry_run,
         )
 
-    def click_init_start_and_confirm(self, init_match: MatchResult) -> None:
-        attempts = max(1, self.config.init_click_retries)
-        last_error: TimeoutError | None = None
-        match = init_match
-
-        for attempt in range(1, attempts + 1):
-            use_foreground_fallback = self.config.click_foreground_fallback and attempt > 1
-            click_mode: InputMode | None = "hid" if use_foreground_fallback else None
-            activate_before_input: bool | None = True if use_foreground_fallback else None
-            if use_foreground_fallback:
-                LOGGER.warning(
-                    "Retrying init_start click with foreground HID fallback attempt=%d/%d",
-                    attempt,
-                    attempts,
-                )
-            else:
-                LOGGER.info("Init_start click attempt=%d/%d", attempt, attempts)
-
-            self.click_match_center(match, mode=click_mode, activate_before_input=activate_before_input)
-
-            if self.config.init_click_confirm_timeout <= 0:
-                LOGGER.info("Init_start click confirmation disabled")
-                return
-
-            try:
-                self.wait_for_template(
-                    "start_fishing",
-                    self.config.scan_interval,
-                    timeout=self.config.init_click_confirm_timeout,
-                )
-                LOGGER.info("Confirmed init_start click by detecting start_fishing")
-                return
-            except TimeoutError as exc:
-                last_error = exc
-                if attempt >= attempts:
-                    break
-                LOGGER.warning(
-                    "Init_start click attempt=%d/%d did not produce start_fishing within %.2fs; retrying after %.0fms",
-                    attempt,
-                    attempts,
-                    self.config.init_click_confirm_timeout,
-                    self.config.init_click_retry_delay * 1000,
-                )
-                if self.config.init_click_retry_delay > 0:
-                    self.sleep(self.config.init_click_retry_delay)
-
-                refreshed = self.matcher.score(self.capture.capture(self._current_window()), "init_start")
-                if refreshed is not None and refreshed.confidence >= self.config.threshold:
-                    match = refreshed
-                    LOGGER.info(
-                        "Refreshed init_start match before retry confidence=%.4f center=%s",
-                        refreshed.confidence,
-                        refreshed.center,
-                    )
-
-        raise TimeoutError(
-            f"init_start click did not produce start_fishing after {attempts} attempt(s); "
-            f"last_error={last_error}"
+    def click_init_start_once(self, init_match: MatchResult) -> None:
+        LOGGER.info(
+            "Clicking init_start once using foreground HID mouse mode; next loop returns to State 1"
         )
+        self.click_match_center(init_match)
+
+    def click_init_start_and_confirm(self, init_match: MatchResult) -> None:
+        """Backward-compatible alias for the simplified one-click init_start action."""
+        self.click_init_start_once(init_match)
 
     def _should_run_phase(self, start_at: StartPhase, phase: StartPhase) -> bool:
         phases = ["start", "catch", "return", "recast", "init"]
@@ -517,19 +494,22 @@ class AutoFishingBot:
         return phases.index(phase) >= phases.index(start_at)
 
     def run_cycle(self, cycle_number: int, start_at: StartPhase = "start") -> None:
+        self.check_stop()
         LOGGER.info("===== Cycle %d started =====", cycle_number)
         LOGGER.info("Cycle %d start phase=%s", cycle_number, start_at)
 
         if self._should_run_phase(start_at, "start"):
+            self.check_stop()
             LOGGER.info("State 1: wait for start_fishing, then press F")
             self.wait_for_template("start_fishing", self.config.scan_interval)
             self.press("f")
             if self.config.post_start_delay > 0:
                 LOGGER.info("Post-start settle delay %.0fms before catch scan", self.config.post_start_delay * 1000)
-                self.sleep(self.config.post_start_delay)
+                self._sleep(self.config.post_start_delay)
             self.confirm_absent_after_action("start_fishing")
 
         if self._should_run_phase(start_at, "catch"):
+            self.check_stop()
             LOGGER.info(
                 "State 2: wait for catch_now, immediately press F, wait for time_to_open_map up to %.0fms, press M",
                 self.config.catch_to_map_delay * 1000,
@@ -543,6 +523,7 @@ class AutoFishingBot:
             self.press_repeated(self.config.map_key, self.config.map_key_retries, self.config.map_key_retry_delay)
 
         if self._should_run_phase(start_at, "return"):
+            self.check_stop()
             LOGGER.info(
                 "State 3: wait for return or failed_catch, press ESC, delay %.0fms, press ESC",
                 self.config.esc_delay * 1000,
@@ -550,19 +531,21 @@ class AutoFishingBot:
             return_match, _ = self.wait_for_any_template(("return", "failed_catch"), self.config.scan_interval)
             LOGGER.info("State 3 exit trigger template=%s; backing out with ESC sequence", return_match.template_name)
             self.press("esc")
-            self.sleep(self.config.esc_delay)
+            self._sleep(self.config.esc_delay)
             self.press("esc")
             self.confirm_absent_after_action(return_match.template_name)
 
         if self._should_run_phase(start_at, "recast"):
+            self.check_stop()
             LOGGER.info("State 4: wait %.0fms, press F", self.config.recast_delay * 1000)
-            self.sleep(self.config.recast_delay)
+            self._sleep(self.config.recast_delay)
             self.press("f")
 
         if self._should_run_phase(start_at, "init"):
-            LOGGER.info("State 5: wait for init_start, click center, then return to State 1")
+            self.check_stop()
+            LOGGER.info("State 5: wait for init_start, click center once, then return to State 1")
             init_match, _ = self.wait_for_template("init_start", self.config.scan_interval)
-            self.click_init_start_and_confirm(init_match)
+            self.click_init_start_once(init_match)
 
         LOGGER.info("===== Cycle %d completed =====", cycle_number)
 
@@ -570,6 +553,7 @@ class AutoFishingBot:
         self.resolve_window()
         cycle = 1
         while self.config.max_cycles is None or cycle <= self.config.max_cycles:
+            self.check_stop()
             start_at = self.config.start_at if cycle == 1 else "start"
             self.run_cycle(cycle, start_at=start_at)
             cycle += 1

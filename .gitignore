@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 artifacts/
+build/
+dist/
 .DS_Store
 
 plan.md

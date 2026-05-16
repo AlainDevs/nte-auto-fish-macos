@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Literal, Mapping
 
 import cv2
@@ -48,7 +49,7 @@ class TemplateMatcher:
     ) -> None:
         self.threshold = threshold
         source = templates if templates is not None else self.DEFAULT_TEMPLATES
-        self.templates: dict[str, Path] = {name: Path(path) for name, path in source.items()}
+        self.templates: dict[str, Path] = {name: self._resolve_template_path(path) for name, path in source.items()}
         self.methods: dict[str, MatchMethod] = {name: "ccoeff" for name in self.templates}
         if methods is not None:
             for name, method in methods.items():
@@ -56,6 +57,24 @@ class TemplateMatcher:
                     raise ValueError("Template match method must be 'ccoeff' or 'sqdiff'")
                 self.methods[name] = method
         self._cache: dict[str, np.ndarray] = {}
+
+    @staticmethod
+    def _resource_base() -> Path:
+        """Return the base path for bundled PyInstaller resources or source files."""
+        bundle_path = getattr(sys, "_MEIPASS", None)
+        if bundle_path:
+            return Path(bundle_path)
+        return Path.cwd()
+
+    @classmethod
+    def _resolve_template_path(cls, path: str | Path) -> Path:
+        template_path = Path(path)
+        if template_path.is_absolute():
+            return template_path
+        bundled = cls._resource_base() / template_path
+        if bundled.exists():
+            return bundled
+        return template_path
 
     @staticmethod
     def _pil_to_gray(image: Image.Image) -> np.ndarray:

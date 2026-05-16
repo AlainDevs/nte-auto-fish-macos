@@ -6,7 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .bot import AutoFishingBot, BotConfig, configure_logging
+from .bot import AutoFishingBot, BotConfig, StopRequested, configure_logging
 from .capture import WindowCapture
 from .input_control import InputController
 from .vision import MatchMethod, TemplateMatcher
@@ -176,10 +176,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         key_hold_seconds=args.key_hold_seconds,
         click_hold_seconds=args.click_hold_seconds,
         input_mode=args.input_mode,
-        click_input_mode=None if args.click_input_mode == "same" else args.click_input_mode,
+        click_input_mode="hid",
         event_source_state=args.event_source_state,
         activate_before_input=args.activate_before_input,
-        activate_before_click=True if args.activate_before_click else None,
+        activate_before_click=True,
         activation_delay=args.activation_delay,
         start_at=args.start_at,
         max_cycles=args.max_cycles,
@@ -191,9 +191,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         action_confirm_timeout=args.action_confirm_timeout,
         absence_confirm_duration=args.absence_confirm_duration,
         init_click_confirm_timeout=args.init_click_confirm_timeout,
-        init_click_retries=args.init_click_retries,
-        init_click_retry_delay=args.init_click_retry_delay,
-        click_foreground_fallback=not args.no_click_foreground_fallback,
     )
     LOGGER.info("Starting bot with config=%s", config)
     AutoFishingBot(config).run()
@@ -201,7 +198,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="NTE macOS background auto-fishing bot")
+    parser = argparse.ArgumentParser(description="NTE macOS auto-fishing diagnostics")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     parser.add_argument("--log-file", default=None, help="Optional path for duplicate detailed logs")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -235,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     input_parser.add_argument("--dry-run", action="store_true", help="Log only; do not send input")
     input_parser.set_defaults(func=cmd_input_test)
 
-    run_parser = subparsers.add_parser("run", help="Run the full fishing state machine")
+    run_parser = subparsers.add_parser("run", help=argparse.SUPPRESS)
     _add_target_args(run_parser)
     run_parser.add_argument("--threshold", type=float, default=0.80, help="OpenCV match confidence threshold")
     run_parser.add_argument("--match-method", choices=["ccoeff", "sqdiff"], default="ccoeff", help="Template matching method for the bot")
@@ -252,10 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--key-hold-seconds", type=float, default=0.100, help="Keyboard down/up hold duration")
     run_parser.add_argument("--click-hold-seconds", type=float, default=0.035, help="Mouse down/up hold duration")
     run_parser.add_argument("--input-mode", choices=["pid", "hid", "both"], default="pid", help="Input mode: pid=background, hid=active session, both=try both")
-    run_parser.add_argument("--click-input-mode", choices=["same", "pid", "hid", "both"], default="same", help="Mouse click input mode. same inherits --input-mode")
     run_parser.add_argument("--event-source-state", choices=["hid", "private", "combined", "none"], default="hid", help="Quartz event source state for generated events")
     run_parser.add_argument("--activate-before-input", action="store_true", help="Bring NTE to front before every input action")
-    run_parser.add_argument("--activate-before-click", action="store_true", help="Bring NTE to front before mouse clicks only")
     run_parser.add_argument("--activation-delay", type=float, default=0.15, help="Delay after foreground activation")
     run_parser.add_argument("--start-at", choices=["start", "catch", "return", "recast", "init"], default="start", help="Start the first cycle from a specific phase")
     run_parser.add_argument("--max-cycles", type=int, default=None, help="Optional maximum fishing cycles")
@@ -268,9 +263,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--action-confirm-timeout", type=float, default=2.0, help="Timeout for post-input visual confirmations")
     run_parser.add_argument("--absence-confirm-duration", type=float, default=0.20, help="Stable absent duration needed to confirm UI changed")
     run_parser.add_argument("--init-click-confirm-timeout", type=float, default=2.0, help="Seconds to wait for start_fishing after init_start click before retry/failure")
-    run_parser.add_argument("--init-click-retries", type=int, default=2, help="Total init_start click attempts before failing")
-    run_parser.add_argument("--init-click-retry-delay", type=float, default=0.250, help="Delay between init_start click attempts")
-    run_parser.add_argument("--no-click-foreground-fallback", action="store_true", help="Disable automatic foreground HID retry when the first init_start click is not confirmed")
     run_parser.set_defaults(func=cmd_run)
 
     return parser
@@ -282,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(verbose=args.verbose, log_file=args.log_file)
     try:
         return int(args.func(args))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, StopRequested):
         LOGGER.info("Stopped by user")
         return 130
     except (LookupError, RuntimeError, TimeoutError, FileNotFoundError, KeyError) as exc:

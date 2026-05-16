@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from PIL import Image
 
-from nte_fisher.bot import AutoFishingBot, BotConfig
+import pytest
+
+from nte_fisher.bot import AutoFishingBot, BotConfig, StopRequested
 from nte_fisher.input_control import SentAction
 from nte_fisher.vision import MatchResult
 from nte_fisher.window_manager import WindowBounds, WindowInfo
@@ -36,6 +38,11 @@ class FakeInput:
     def __init__(self) -> None:
         self.clicks: list[dict[str, object]] = []
         self.keys: list[str] = []
+        self.activated_pids: list[int] = []
+
+    def activate_application(self, pid: int) -> bool:
+        self.activated_pids.append(pid)
+        return True
 
     def click(self, pid, x, y, hold_seconds=0.035, mode=None, activate_before_input=None):
         self.clicks.append(
@@ -132,7 +139,7 @@ class AlwaysMatcher:
         )
 
 
-def test_init_click_retries_with_foreground_hid_fallback() -> None:
+def test_init_click_uses_single_foreground_hid_click_without_confirmation_retry() -> None:
     window = WindowInfo(
         owner_name="NTE",
         window_name="Main",
@@ -147,9 +154,6 @@ def test_init_click_retries_with_foreground_hid_fallback() -> None:
         scan_interval=0,
         click_hold_seconds=0,
         init_click_confirm_timeout=0.001,
-        init_click_retries=2,
-        init_click_retry_delay=0,
-        click_foreground_fallback=True,
     )
     bot = AutoFishingBot(
         config,
@@ -162,11 +166,10 @@ def test_init_click_retries_with_foreground_hid_fallback() -> None:
 
     bot.run_cycle(1, start_at="init")
 
-    assert len(fake_input.clicks) == 2
-    assert fake_input.clicks[0]["mode"] == "pid"
-    assert fake_input.clicks[0]["activate_before_input"] is None
-    assert fake_input.clicks[1]["mode"] == "hid"
-    assert fake_input.clicks[1]["activate_before_input"] is True
+    assert len(fake_input.clicks) == 1
+    assert fake_input.clicks[0]["mode"] == "hid"
+    assert fake_input.clicks[0]["activate_before_input"] is False
+    assert fake_input.activated_pids == [1234]
     assert fake_input.clicks[0]["x"] == 300
     assert fake_input.clicks[0]["y"] == 300
 
@@ -210,6 +213,9 @@ def test_click_uses_refreshed_window_bounds_for_coordinate_mapping() -> None:
 
     assert fake_input.clicks[0]["x"] == 1122
     assert fake_input.clicks[0]["y"] == 735.5
+    assert fake_input.clicks[0]["mode"] == "hid"
+    assert fake_input.clicks[0]["activate_before_input"] is False
+    assert fake_input.activated_pids == [1234]
 
 
 def test_return_phase_backs_out_when_failed_catch_detected(caplog) -> None:
@@ -293,3 +299,76 @@ def test_catch_phase_opens_map_immediately_when_time_to_open_map_detected(caplog
 
     assert fake_input.keys[:2] == ["f", "m"]
     assert "time_to_open_map detected; opening map immediately" in caplog.text
+
+
+def test_bot_config_defaults_keep_keyboard_pid_and_mouse_hid_foreground() -> None:
+    config = BotConfig()
+
+    assert config.input_mode == "pid"
+    assert config.click_input_mode == "hid"
+    assert config.activate_before_input is False
+    assert config.activate_before_click is True
+    assert config.max_cycles is None
+
+
+def test_run_checks_stop_before_second_unlimited_cycle() -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    calls = {"cycles": 0}
+
+    def should_stop() -> bool:
+        return calls["cycles"] >= 1
+
+    bot = AutoFishingBot(
+        BotConfig(max_cycles=None),
+        window_manager=FakeWindowManager(window),
+        capture=FakeCapture(),
+        matcher=AlwaysMatcher({}),
+        input_controller=FakeInput(),
+        sleep=lambda seconds: None,
+        should_stop=should_stop,
+    )
+
+    def one_cycle(cycle_number, start_at="start") -> None:
+        calls["cycles"] += 1
+
+    bot.run_cycle = one_cycle
+
+    with pytest.raises(StopRequested):
+        bot.run()
+
+    assert calls["cycles"] == 1
+
+
+def test_sleep_is_interruptible_between_short_steps() -> None:
+    window = WindowInfo(
+        owner_name="NTE",
+        window_name="Main",
+        pid=1234,
+        window_id=5678,
+        bounds=WindowBounds(x=100, y=200, width=800, height=400),
+    )
+    slept: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    bot = AutoFishingBot(
+        BotConfig(),
+        window_manager=FakeWindowManager(window),
+        capture=FakeCapture(),
+        matcher=AlwaysMatcher({}),
+        input_controller=FakeInput(),
+        sleep=fake_sleep,
+        should_stop=lambda: len(slept) >= 2,
+    )
+
+    with pytest.raises(StopRequested):
+        bot._sleep(1.0)
+
+    assert slept == [0.1, 0.1]
