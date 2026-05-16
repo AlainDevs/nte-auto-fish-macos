@@ -12,7 +12,7 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from .bot import AutoFishingBot, BotConfig, StopRequested, configure_logging
+from .bot import AutoFishingBot, BotConfig, SessionStats, StopRequested, configure_logging
 from .input_control import InputController
 from .window_manager import WindowInfo, WindowManager, format_window
 
@@ -64,6 +64,7 @@ class NTEFisherApp(ctk.CTk):
         self.query_var = ctk.StringVar(value="NTE")
         self.window_var = ctk.StringVar(value="No window selected")
         self.status_var = ctk.StringVar(value="Idle")
+        self.session_stats_var = ctk.StringVar(value=self._format_session_stats(SessionStats()))
         self.threshold_var = ctk.StringVar(value="0.80")
         self.scan_interval_var = ctk.StringVar(value="0.08")
         self.catch_scan_interval_var = ctk.StringVar(value="0.03")
@@ -94,6 +95,10 @@ class NTEFisherApp(ctk.CTk):
             text="Keyboard uses PID background events; mouse clicks use foreground HID activation once per init_start.",
             anchor="w",
         ).grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="ew")
+
+        ctk.CTkLabel(header, textvariable=self.session_stats_var, anchor="w").grid(
+            row=2, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="ew"
+        )
 
         self.status_label = ctk.CTkLabel(header, textvariable=self.status_var, font=ctk.CTkFont(weight="bold"))
         self.status_label.grid(row=0, column=2, padx=12, pady=12, sticky="e")
@@ -197,6 +202,20 @@ class NTEFisherApp(ctk.CTk):
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
+
+    def _format_session_stats(self, stats: SessionStats) -> str:
+        return (
+            "Session: "
+            f"loops={stats.loops_completed} "
+            f"success={stats.successful_loops} "
+            f"failed/fish gone={stats.failed_fish_gone_loops}"
+        )
+
+    def _apply_session_stats(self, stats: SessionStats) -> None:
+        self.session_stats_var.set(self._format_session_stats(stats))
+
+    def _schedule_session_stats_update(self, stats: SessionStats) -> None:
+        self.after(0, lambda stats=stats: self._apply_session_stats(stats))
 
     def _log_process_identity(self) -> None:
         LOGGER.info("App process pid=%s executable=%s", os.getpid(), sys.executable)
@@ -320,6 +339,7 @@ class NTEFisherApp(ctk.CTk):
                 return
 
         self.stop_event.clear()
+        self._apply_session_stats(SessionStats())
         self._set_running(True)
         self.bot_thread = threading.Thread(target=self._run_bot, args=(config,), daemon=True)
         self.bot_thread.start()
@@ -327,7 +347,11 @@ class NTEFisherApp(ctk.CTk):
     def _run_bot(self, config: BotConfig) -> None:
         try:
             LOGGER.info("Starting unlimited bot run with config=%s", config)
-            AutoFishingBot(config, should_stop=self.stop_event.is_set).run()
+            AutoFishingBot(
+                config,
+                should_stop=self.stop_event.is_set,
+                stats_callback=self._schedule_session_stats_update,
+            ).run()
         except StopRequested:
             LOGGER.info("Bot stopped by user")
         except Exception as exc:

@@ -83,6 +83,7 @@ fake_ctk = types.SimpleNamespace(
 
 sys.modules.setdefault("customtkinter", fake_ctk)
 
+from nte_fisher.bot import SessionStats
 from nte_fisher.gui import NTEFisherApp
 from nte_fisher.window_manager import WindowBounds, WindowInfo
 
@@ -111,6 +112,7 @@ def test_gui_build_config_uses_selected_window_and_simplified_input_modes() -> N
     assert config.scan_interval == 0.09
     assert config.catch_scan_interval == 0.04
     assert config.max_cycles is None
+    assert config.map_key_retries == 1
     assert config.input_mode == "pid"
     assert config.click_input_mode == "hid"
     assert config.activate_before_input is False
@@ -144,3 +146,12 @@ def test_gui_prefers_non_gui_windows_when_query_matches_itself() -> None:
         assert app._pick_best_window([gui_window]) == []
     finally:
         gui.os.getpid = original_getpid
+
+
+def test_gui_applies_session_stats_text() -> None:
+    app = NTEFisherApp.__new__(NTEFisherApp)
+    app.session_stats_var = FakeVariable()
+
+    app._apply_session_stats(SessionStats(loops_completed=5, successful_loops=3, failed_fish_gone_loops=2))
+
+    assert app.session_stats_var.get() == "Session: loops=5 success=3 failed/fish gone=2"

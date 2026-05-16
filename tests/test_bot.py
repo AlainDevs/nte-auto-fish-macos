@@ -256,6 +256,10 @@ def test_return_phase_backs_out_when_failed_catch_detected(caplog) -> None:
 
     assert fake_input.keys == ["esc", "esc", "f"]
     assert "State 3 exit trigger template=failed_catch" in caplog.text
+    assert bot.stats.loops_completed == 1
+    assert bot.stats.successful_loops == 0
+    assert bot.stats.failed_fish_gone_loops == 1
+    assert "session stats: loops_completed=1 successful=0 failed_fish_gone=1" in caplog.text
 
 
 def test_catch_phase_opens_map_immediately_when_time_to_open_map_detected(caplog) -> None:
@@ -267,13 +271,14 @@ def test_catch_phase_opens_map_immediately_when_time_to_open_map_detected(caplog
         bounds=WindowBounds(x=100, y=200, width=800, height=400),
     )
     fake_input = FakeInput()
+    stats_updates = []
     bot = AutoFishingBot(
         BotConfig(
             threshold=0.70,
             catch_scan_interval=0,
             time_to_open_map_scan_interval=0,
             catch_to_map_delay=5,
-            map_key_retries=1,
+            map_key_retries=3,
             esc_delay=0,
             recast_delay=0,
             click_hold_seconds=0,
@@ -292,13 +297,20 @@ def test_catch_phase_opens_map_immediately_when_time_to_open_map_detected(caplog
         ),
         input_controller=fake_input,
         sleep=lambda seconds: None,
+        stats_callback=stats_updates.append,
     )
 
     with caplog.at_level("INFO", logger="nte_fisher"):
         bot.run_cycle(1, start_at="catch")
 
     assert fake_input.keys[:2] == ["f", "m"]
+    assert fake_input.keys.count("m") == 1
     assert "time_to_open_map detected; opening map immediately" in caplog.text
+    assert "Pressing map key once key=m" in caplog.text
+    assert bot.stats.loops_completed == 1
+    assert bot.stats.successful_loops == 1
+    assert bot.stats.failed_fish_gone_loops == 0
+    assert stats_updates == [bot.stats]
 
 
 def test_bot_config_defaults_keep_keyboard_pid_and_mouse_hid_foreground() -> None:
@@ -309,6 +321,7 @@ def test_bot_config_defaults_keep_keyboard_pid_and_mouse_hid_foreground() -> Non
     assert config.activate_before_input is False
     assert config.activate_before_click is True
     assert config.max_cycles is None
+    assert config.map_key_retries == 1
 
 
 def test_run_checks_stop_before_second_unlimited_cycle() -> None:

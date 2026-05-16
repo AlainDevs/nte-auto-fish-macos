@@ -16,10 +16,12 @@ The bot repeats this sequence until stopped:
 
 1. Detect `images/start_fishing.png`, then press `F` with PID keyboard input.
 2. Confirm `images/start_fishing.png` disappears, then detect `images/catch_now.png` and press `F` with PID keyboard input.
-3. Wait for `images/time_to_open_map.png` briefly, then press the configured map key, default `M`.
+3. Wait for `images/time_to_open_map.png` briefly, then press the configured map key exactly once, default `M`.
 4. Detect either `images/return.png` or `images/failed_catch.png`, then press `ESC`, wait, and press `ESC` again.
 5. Wait the recast delay, then press `F`.
 6. Detect `images/init_start.png`, activate the NTE app, click the center once with foreground HID mouse input, then return to step 1.
+
+The GUI and logs show session totals for completed loops: `images/return.png` counts as a successful loop, and `images/failed_catch.png` counts as a failed/fish-gone loop.
 
 ## Requirements
 

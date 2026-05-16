@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--catch-to-map-delay", type=float, default=0.250, help="Maximum seconds to wait for time_to_open_map before pressing the map key anyway")
     run_parser.add_argument("--time-to-open-map-scan-interval", type=float, default=0.03, help="Fast scan interval for time_to_open_map after catch F")
     run_parser.add_argument("--map-key", choices=["m", "tab", "b", "c", "j", "k", "l", "i", "o", "p", "u", "n", "f1", "f2", "f3", "f4", "esc"], default="m", help="Menu key to press after catching")
-    run_parser.add_argument("--map-key-retries", type=int, default=3, help="Number of M presses after catch")
+    run_parser.add_argument("--map-key-retries", type=int, default=1, help="Compatibility option; the map key is pressed once after catch")
     run_parser.add_argument("--map-key-retry-delay", type=float, default=0.250, help="Delay between repeated M presses")
     run_parser.add_argument("--esc-delay", type=float, default=0.250, help="Delay between ESC presses")
     run_parser.add_argument("--recast-delay", type=float, default=1.000, help="Delay before recast F")

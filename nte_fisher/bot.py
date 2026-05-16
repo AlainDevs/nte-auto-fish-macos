@@ -38,10 +38,10 @@ class BotConfig:
     scan_interval: float = 0.08
     catch_scan_interval: float = 0.03
     post_start_delay: float = 0.300
-    catch_to_map_delay: float = 0.555
+    catch_to_map_delay: float = 0.444
     time_to_open_map_scan_interval: float = 0.03
     map_key: str = "m"
-    map_key_retries: int = 3
+    map_key_retries: int = 1
     map_key_retry_delay: float = 0.250
     esc_delay: float = 0.250
     recast_delay: float = 1.500
@@ -68,6 +68,15 @@ class BotConfig:
     click_foreground_fallback: bool = True
 
 
+@dataclass(frozen=True)
+class SessionStats:
+    """Per-run fishing outcome counters."""
+
+    loops_completed: int = 0
+    successful_loops: int = 0
+    failed_fish_gone_loops: int = 0
+
+
 class AutoFishingBot:
     """Runs the requested NTE fishing loop against a background window."""
 
@@ -80,6 +89,7 @@ class AutoFishingBot:
         input_controller: InputController | None = None,
         sleep: Callable[[float], None] = time.sleep,
         should_stop: Callable[[], bool] | None = None,
+        stats_callback: Callable[[SessionStats], None] | None = None,
     ) -> None:
         self.config = config
         self.window_manager = window_manager if window_manager is not None else WindowManager()
@@ -102,6 +112,8 @@ class AutoFishingBot:
         )
         self.sleep = sleep
         self.should_stop = should_stop if should_stop is not None else lambda: False
+        self.stats_callback = stats_callback
+        self.stats = SessionStats()
         self.window: WindowInfo | None = None
 
     def check_stop(self) -> None:
@@ -411,6 +423,48 @@ class AutoFishingBot:
             if index < count - 1 and delay > 0:
                 self._sleep(delay)
 
+    def _session_stats_message(self) -> str:
+        return (
+            f"loops_completed={self.stats.loops_completed} "
+            f"successful={self.stats.successful_loops} "
+            f"failed_fish_gone={self.stats.failed_fish_gone_loops}"
+        )
+
+    def _notify_stats(self) -> None:
+        if self.stats_callback is None:
+            return
+        try:
+            self.stats_callback(self.stats)
+        except Exception:  # pragma: no cover - callback safety net
+            LOGGER.exception("Session stats callback failed")
+
+    def _record_cycle_outcome(self, cycle_number: int, outcome_template: str | None) -> None:
+        if outcome_template not in {"return", "failed_catch"}:
+            LOGGER.info(
+                "Cycle %d completed without counted return/failed_catch outcome; session stats unchanged: %s",
+                cycle_number,
+                self._session_stats_message(),
+            )
+            self._notify_stats()
+            return
+
+        successful_loops = self.stats.successful_loops + (1 if outcome_template == "return" else 0)
+        failed_fish_gone_loops = self.stats.failed_fish_gone_loops + (1 if outcome_template == "failed_catch" else 0)
+        self.stats = SessionStats(
+            loops_completed=self.stats.loops_completed + 1,
+            successful_loops=successful_loops,
+            failed_fish_gone_loops=failed_fish_gone_loops,
+        )
+        outcome_label = "success" if outcome_template == "return" else "failed_fish_gone"
+        LOGGER.info(
+            "Cycle %d counted outcome=%s trigger_template=%s; session stats: %s",
+            cycle_number,
+            outcome_label,
+            outcome_template,
+            self._session_stats_message(),
+        )
+        self._notify_stats()
+
     def _configured_click_mode(self) -> InputMode:
         return self.config.click_input_mode
 
@@ -497,6 +551,7 @@ class AutoFishingBot:
         self.check_stop()
         LOGGER.info("===== Cycle %d started =====", cycle_number)
         LOGGER.info("Cycle %d start phase=%s", cycle_number, start_at)
+        outcome_template: str | None = None
 
         if self._should_run_phase(start_at, "start"):
             self.check_stop()
@@ -511,7 +566,7 @@ class AutoFishingBot:
         if self._should_run_phase(start_at, "catch"):
             self.check_stop()
             LOGGER.info(
-                "State 2: wait for catch_now, immediately press F, wait for time_to_open_map up to %.0fms, press M",
+                "State 2: wait for catch_now, immediately press F, wait for time_to_open_map up to %.0fms, press map key once",
                 self.config.catch_to_map_delay * 1000,
             )
             self.wait_for_template("catch_now", self.config.catch_scan_interval)
@@ -520,7 +575,8 @@ class AutoFishingBot:
                 self.wait_until_time_to_open_map()
             except TimeoutError:
                 pass
-            self.press_repeated(self.config.map_key, self.config.map_key_retries, self.config.map_key_retry_delay)
+            LOGGER.info("Pressing map key once key=%s", self.config.map_key)
+            self.press(self.config.map_key)
 
         if self._should_run_phase(start_at, "return"):
             self.check_stop()
@@ -529,6 +585,7 @@ class AutoFishingBot:
                 self.config.esc_delay * 1000,
             )
             return_match, _ = self.wait_for_any_template(("return", "failed_catch"), self.config.scan_interval)
+            outcome_template = return_match.template_name
             LOGGER.info("State 3 exit trigger template=%s; backing out with ESC sequence", return_match.template_name)
             self.press("esc")
             self._sleep(self.config.esc_delay)
@@ -547,6 +604,7 @@ class AutoFishingBot:
             init_match, _ = self.wait_for_template("init_start", self.config.scan_interval)
             self.click_init_start_once(init_match)
 
+        self._record_cycle_outcome(cycle_number, outcome_template)
         LOGGER.info("===== Cycle %d completed =====", cycle_number)
 
     def run(self) -> None:
