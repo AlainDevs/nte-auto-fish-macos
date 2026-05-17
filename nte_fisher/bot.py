@@ -119,6 +119,8 @@ class AutoFishingBot:
             "return": config.match_method,
             "failed_catch": config.match_method,
             "init_start": config.match_method,
+            "time_to_click_start": config.match_method,
+            "phone": config.match_method,
         }
         self.matcher = matcher if matcher is not None else TemplateMatcher(threshold=config.threshold, methods=methods)
         self.input = input_controller if input_controller is not None else InputController(
@@ -643,9 +645,22 @@ class AutoFishingBot:
 
         if self._should_run_phase(start_at, "recast"):
             self.check_stop()
-            LOGGER.info("State 4: wait %.0fms, press F", self.config.recast_delay * 1000)
-            self._sleep(self.config.recast_delay)
-            self.press("f")
+            LOGGER.info("State 4: wait for time_to_click_start or phone")
+            while True:
+                self.check_stop()
+                match, image = self.wait_for_any_template(("time_to_click_start", "phone"), self.config.scan_interval)
+                try:
+                    if match.template_name == "phone":
+                        LOGGER.info("Detected phone template; pressing ESC to back out")
+                        self.press("esc")
+                        self._sleep(1.0)
+                        continue
+                    else:
+                        LOGGER.info("Detected time_to_click_start template; pressing F")
+                        self.press("f")
+                        break
+                finally:
+                    close_capture_image(image)
 
         if self._should_run_phase(start_at, "init"):
             self.check_stop()

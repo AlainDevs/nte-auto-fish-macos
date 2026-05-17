@@ -75,9 +75,9 @@ class NTEFisherApp(ctk.CTk):
         self.window_var = ctk.StringVar(value="No window selected")
         self.status_var = ctk.StringVar(value="Idle")
         self.session_stats_var = ctk.StringVar(value=self._format_session_stats(SessionStats()))
-        self.threshold_var = ctk.StringVar(value="0.80")
+        self.threshold_var = ctk.StringVar(value="0.70")
         self.scan_interval_var = ctk.StringVar(value="0.08")
-        self.catch_scan_interval_var = ctk.StringVar(value="0.03")
+        self.catch_scan_interval_var = ctk.StringVar(value="0.01")
         self.map_key_var = ctk.StringVar(value="m")
         self.dry_run_var = ctk.BooleanVar(value=False)
 

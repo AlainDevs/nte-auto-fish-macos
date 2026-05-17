@@ -356,7 +356,7 @@ def test_click_uses_refreshed_window_bounds_for_coordinate_mapping() -> None:
     assert fake_input.activated_pids == [1234]
 
 
-def test_return_phase_backs_out_with_single_esc_when_failed_catch_detected(caplog) -> None:
+def test_return_phase_backs_out_with_double_esc_when_failed_catch_detected(caplog) -> None:
     window = WindowInfo(
         owner_name="NTE",
         window_name="Main",
@@ -370,6 +370,7 @@ def test_return_phase_backs_out_with_single_esc_when_failed_catch_detected(caplo
             {"return": 0.20, "failed_catch": 0.30},
             {"return": 0.25, "failed_catch": 0.95},
             {"failed_catch": 0.10},
+            {"time_to_click_start": 0.95},
             {"init_start": 0.95},
             {"start_fishing": 0.95},
         ]
@@ -392,7 +393,7 @@ def test_return_phase_backs_out_with_single_esc_when_failed_catch_detected(caplo
     with caplog.at_level("INFO", logger="nte_fisher"):
         bot.run_cycle(1, start_at="return")
 
-    assert fake_input.keys == ["esc", "f"]
+    assert fake_input.keys == ["esc", "esc", "f"]
     assert "State 3 exit trigger template=failed_catch" in caplog.text
     assert bot.stats.loops_completed == 1
     assert bot.stats.successful_loops == 0
@@ -429,6 +430,7 @@ def test_catch_phase_opens_map_immediately_when_time_to_open_map_detected(caplog
                 "catch_now": 0.95,
                 "time_to_open_map": 0.95,
                 "return": 0.95,
+                "time_to_click_start": 0.95,
                 "init_start": 0.95,
                 "start_fishing": 0.95,
             }

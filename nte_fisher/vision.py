@@ -39,6 +39,8 @@ class TemplateMatcher:
         "return": "images/return.png",
         "failed_catch": "images/failed_catch.png",
         "init_start": "images/init_start.png",
+        "time_to_click_start": "images/time_to_click_start.png",
+        "phone": "images/phone.png",
     }
 
     def __init__(
