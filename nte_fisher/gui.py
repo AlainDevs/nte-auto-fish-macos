@@ -248,6 +248,18 @@ class NTEFisherApp(ctk.CTk):
             )
             InputController.open_accessibility_settings()
 
+        try:
+            import Quartz
+            rect = Quartz.CGRectMake(0, 0, 1, 1)
+            Quartz.CGWindowListCreateImage(
+                rect,
+                Quartz.kCGWindowListOptionOnScreenOnly,
+                Quartz.kCGNullWindowID,
+                Quartz.kCGWindowImageDefault,
+            )
+        except Exception as exc:
+            LOGGER.debug("Could not trigger screen recording prompt: %s", exc)
+
         LOGGER.info(
             "If capture is blank or templates do not detect, enable Screen Recording for NTE Auto Fisher."
         )
