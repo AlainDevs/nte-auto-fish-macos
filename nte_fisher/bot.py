@@ -75,8 +75,8 @@ class BotConfig:
     log_wait_every: float = 2.0
     wait_timeout: float | None = None
     confirm_actions: bool = True
-    start_absence_confirm_timeout: float = 8.0
-    action_confirm_timeout: float = 2.0
+    start_absence_confirm_timeout: float | None = None
+    action_confirm_timeout: float | None = 2.0
     absence_confirm_duration: float = 0.20
     init_click_confirm_timeout: float = 2.0
     init_click_retries: int = 2
@@ -335,7 +335,7 @@ class AutoFishingBot:
         self,
         template_name: str,
         scan_interval: float,
-        timeout: float,
+        timeout: float | None,
         stable_duration: float,
     ) -> None:
         """Wait until a template is below threshold for a stable period."""
@@ -345,9 +345,9 @@ class AutoFishingBot:
         best_present_score = -1.0
 
         LOGGER.info(
-            "Confirming template=%s is absent timeout=%.2fs stable=%.2fs threshold=%.2f",
+            "Confirming template=%s is absent timeout=%s stable=%.2fs threshold=%.2f",
             template_name,
-            timeout,
+            f"{timeout:.2f}s" if timeout is not None else "None",
             stable_duration,
             self.config.threshold,
         )
@@ -375,7 +375,7 @@ class AutoFishingBot:
                 else:
                     absent_since = None
 
-                if now - start >= timeout:
+                if timeout is not None and now - start >= timeout:
                     raise TimeoutError(
                         f"Timed out confirming template={template_name!r} absent after {timeout:.1f}s; "
                         f"last_confidence={confidence:.4f} best_confidence={best_present_score:.4f}"
