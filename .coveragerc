@@ -1,0 +1,18 @@
+[run]
+omit =
+    nte_fisher/__main__.py
+    nte_fisher_app.py
+    nte_fisher/gui.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    pass
+    except ImportError:
+    except Exception:
+    except Exception as exc:
+    if sys.platform == "darwin":

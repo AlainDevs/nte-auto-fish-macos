@@ -82,6 +82,27 @@ class FakeRoot(FakeWidget):
     def destroy(self) -> None:
         pass
 
+    def title(self, *args, **kwargs) -> None:
+        pass
+
+    def geometry(self, *args, **kwargs) -> None:
+        pass
+
+    def minsize(self, *args, **kwargs) -> None:
+        pass
+
+    def grid_columnconfigure(self, *args, **kwargs) -> None:
+        pass
+
+    def grid_rowconfigure(self, *args, **kwargs) -> None:
+        pass
+
+    def after(self, *args, **kwargs) -> None:
+        pass
+
+    def protocol(self, *args, **kwargs) -> None:
+        pass
+
 
 fake_ctk = types.SimpleNamespace(
     CTk=FakeRoot,

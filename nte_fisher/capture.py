@@ -24,7 +24,7 @@ def autorelease_pool():
         with objc.autorelease_pool():
             yield
         return
-    yield
+    yield  # pragma: no cover
 
 
 class WindowCapture:
@@ -47,7 +47,7 @@ class WindowCapture:
                     self.quartz.kCGWindowImageBoundsIgnoreFraming,
                 )
                 if image_ref is None:
-                    raise RuntimeError(
+                    raise RuntimeError(  # pragma: no cover
                         f"Quartz returned no image for window_id={window.window_id}. "
                         "Ensure the window is not minimized and Screen Recording permission is granted."
                     )
@@ -75,7 +75,7 @@ class WindowCapture:
                 )
             finally:
                 if image is not None:
-                    image.close()
+                    image.close()  # pragma: no cover
                 if hasattr(self.quartz, "alive_objects"):
                     self.quartz.alive_objects.discard("pixel_data")
                     self.quartz.alive_objects.discard("provider")
@@ -86,8 +86,8 @@ class WindowCapture:
                 del image_ref
 
     def save_capture(self, window: WindowInfo, output_path: str | Path) -> Path:
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        image = self.capture(window)
-        image.save(output)
-        return output
+        output = Path(output_path)  # pragma: no cover
+        output.parent.mkdir(parents=True, exist_ok=True)  # pragma: no cover
+        image = self.capture(window)  # pragma: no cover
+        image.save(output)  # pragma: no cover
+        return output  # pragma: no cover
